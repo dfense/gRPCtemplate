@@ -6,5 +6,15 @@ This project goes in parallel with the http://github.com/dfense/protobufModel pr
 This method allows me to use go modules to make them easy to build.
 
 # Build Instructions
-to build this project, just clone the project, and run
+to build this project, just clone the project, and run  
+
 ```go build github.com/dfense/gRPCtemplate```
+that will build the source and place the binaries in the default go directory. on osx that is: ~/go/bin
+
+## clone and build
+if you want to work on the project, it's best to clone it, and then build it like so
+
+```
+  git clone github.com/dfense/gRPCtemplate
+  go build github.com/dfense/gRPCtemplate
+```

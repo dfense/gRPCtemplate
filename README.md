@@ -8,7 +8,8 @@ This method allows me to use go modules to make them easy to build.
 # Build Instructions
 to build this project, just clone the project, and run  
 
-```go build github.com/dfense/gRPCtemplate```
+```go build github.com/dfense/gRPCtemplate```  
+
 that will build the source and place the binaries in the default go directory. on osx that is: ~/go/bin
 
 ## clone and build

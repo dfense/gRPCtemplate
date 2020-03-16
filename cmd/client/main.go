@@ -35,6 +35,22 @@ const (
 )
 
 func main() {
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+
+	// Set up a connection to the server.
+	conn2, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
+	if err != nil {
+		log.Fatalf("did not connect: %v", err)
+	}
+	d := pb.NewEchoClient(conn2)
+	pong, err := d.Ping(ctx, &pb.PingRequest{MessageId: 20})
+	if err != nil {
+		log.Printf("error from ping %s\n", err)
+	}
+	log.Printf("reply from Ping: %+v", pong)
+	conn2.Close()
+
 	// Set up a connection to the server.
 	conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
 	if err != nil {
@@ -48,11 +64,11 @@ func main() {
 	if len(os.Args) > 1 {
 		name = os.Args[1]
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	r, err := c.SayHello(ctx, &pb.HelloRequest{Name: name})
 	if err != nil {
 		log.Fatalf("could not greet: %v", err)
 	}
 	log.Printf("Greeting: %s", r.GetMessage())
+
 }

@@ -23,8 +23,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
+	"time"
 
 	pb "github.com/dfense/protobufModels"
 	"google.golang.org/grpc"
@@ -39,10 +41,65 @@ type server struct {
 	pb.UnimplementedGreeterServer
 }
 
+type eserver struct {
+	name string
+}
+
 // SayHello implements helloworld.GreeterServer
 func (s *server) SayHello(ctx context.Context, in *pb.HelloRequest) (*pb.HelloReply, error) {
 	log.Printf("Received: %v", in.GetName())
 	return &pb.HelloReply{Message: "Hello " + in.GetName()}, nil
+}
+
+// Ping returns a PongReply
+func (eserver *eserver) Ping(ctx context.Context, in *pb.PingRequest) (*pb.PongReply, error) {
+	log.Printf("Servername: %s\n", eserver.name)
+	log.Printf("Received: %v\n", in.GetMessageId())
+	return &pb.PongReply{MessageId: 200, PongCnt: 0}, nil
+}
+
+func (eserver eserver) Echo(srv pb.Echo_EchoServer) error {
+
+	ctx, _ := context.WithCancel(srv.Context())
+	for {
+		fmt.Println("settting up for read")
+		// exit if context is done
+		// or continue
+		select {
+		case <-ctx.Done():
+			log.Println("exiting on ctx.Done()")
+			return ctx.Err()
+		default:
+		}
+
+		// receive data from stream
+		// req, err := srv.Recv()
+		// if err == io.EOF {
+		// 	// return will close stream from server side
+		// 	log.Println("exit")
+		// 	return nil
+		// }
+		// if err != nil {
+		// 	log.Printf("receive error %v", err)
+		// 	continue
+		// }
+
+		// value := req.GetErequest()
+		// fmt.Println(value)
+
+		// update max and send it to stream
+		value := int32(5)
+		resp := pb.EchoReply{Ereply: value}
+		if err := srv.Send(&resp); err != nil {
+			log.Printf("send error %v", err)
+		}
+		log.Printf("send new max=%d", value)
+		// log.Println("calling cencel")
+		// cancel()
+		time.Sleep(500 * time.Millisecond)
+
+	}
+	return nil
 }
 
 func main() {
@@ -51,8 +108,13 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 	s := grpc.NewServer()
+
 	pb.RegisterGreeterServer(s, &server{})
+	pb.RegisterEchoServer(s, &eserver{name: "EchoServer"})
+
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
+
+	s.GracefulStop()
 }

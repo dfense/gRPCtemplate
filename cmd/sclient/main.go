@@ -27,39 +27,32 @@ var (
 type EchoClient struct {
 	fname        string
 	lname        string
-	conn         *grpc.ClientConn
-	stream       pb.Echo_EchoClient
 	delete       uint32
 	closeMonitor chan struct{}
+	close        chan struct{}
 }
 
 func main() {
 	rand.Seed(time.Now().Unix())
-	e := EchoClient{fname: "bob", lname: "smith", closeMonitor: make(chan struct{})}
+	e := EchoClient{fname: "bob", lname: "smith", closeMonitor: make(chan struct{}), close: make(chan struct{})}
 
-	ctx := context.Background()
-
-	var err error
-	e.conn, e.stream, err = getStream(ctx)
-	for err != nil {
-		// stall and try again
-		log.Println("trying getStream")
-		e.conn, e.stream, err = getStream(ctx)
-	}
-
-	ctx = e.stream.Context()
+	ctx, _ := context.WithCancel(context.Background())
+	// dail server, this context not helpful unless i need to call cancel on conn
+	conn, err := grpc.DialContext(ctx, ":50051", grpc.WithInsecure())
 	if err != nil {
-		fmt.Errorf("error opening stream: %s", err)
+		log.Errorf("can not connect with server %v", err)
+		os.Exit(1)
 	}
 
-	go e.monitor(ctx)
-
-	e.startReading()
+	e.startReading(ctx, conn)
 	go e.console()
 
+	// wait for inner channel message from EchoClient read
 WAITING:
 	for {
 		select {
+		case <-ctx.Done():
+			fmt.Println("---- tope ---- ")
 		case <-e.closeMonitor:
 			fmt.Println("timeout")
 			// time for stream to close out
@@ -70,111 +63,88 @@ WAITING:
 
 }
 
-func (e *EchoClient) startReading() {
+// startReading takes a connection and creates a gRPC service and calls rpc streaming function
+func (e *EchoClient) startReading(transportContext context.Context, inconn *grpc.ClientConn) {
 	go func() {
 
-		defer e.stream.CloseSend()
-		defer e.conn.Close()
+		// create service
+		echoService := pb.NewEchoClient(inconn)
 
+		// create the stream on Echo retry forever
+		stream, err := echoService.Echo(transportContext)
+		for err != nil {
+			log.Errorf("open stream error %v", err)
+			time.Sleep(time.Second) // slow down rate of retry
+			stream, err = echoService.Echo(transportContext)
+		}
+
+		// this one calls cancel on stream error
+		streamContext := stream.Context()
+
+		// restart thread grpc connection if it drops
+		go func() {
+			// wait for thread to die
+			newctx, _ := context.WithCancel(context.Background())
+
+		QUIT:
+			select {
+
+			case <-streamContext.Done():
+				// if shutting down, exit w/o restart
+				if atomic.LoadUint32(&e.delete) == 1 {
+					inconn.Close()
+					e.closeMonitor <- struct{}{}
+					break QUIT
+				}
+
+				// start restart of read - duplicate of main()
+				newconn, err := grpc.DialContext(newctx, ":50051", grpc.WithInsecure())
+				if err != nil {
+					log.Errorf("dial can't connect to server: %s", err)
+				}
+				e.startReading(transportContext, newconn)
+
+				// called by external channel message to kill running process
+			case <-e.close:
+				fmt.Println("Calling cancel")
+				// kill running stream
+				inconn.Close()
+				e.closeMonitor <- struct{}{}
+			}
+		}()
+
+		// just read the stream
 		for {
-			log.Println("setting up Recv()")
-			resp, err := e.stream.Recv()
+			resp, err := stream.Recv()
 			if err == io.EOF {
-				log.Println("EOF received")
+				log.Errorf("EOF received")
 				break
 			}
 			if err != nil {
-				log.Printf("second error: %s\n", err)
+				log.Errorf("second error: %s\n", err)
 				break
 			}
 			echoReply := resp.GetEreply()
-			log.Printf("new echo reply %d received\n", echoReply)
+			log.Printf("new echo message [%d] \n", echoReply)
 		}
-		// select {
-		// case <-ctx.Done():
-		// 	log.Println("inside startReading-context")
-		// default:
-		// 	log.Println("inside startReading-default")
-		// }
-		log.Println("leaving second loop")
 	}()
-}
-
-func getStream(ctx context.Context) (*grpc.ClientConn, pb.Echo_EchoClient, error) {
-	// dail server
-	conn, err := grpc.Dial(":50051", grpc.WithInsecure())
-	if err != nil {
-		log.Errorf("can not connect with server %v", err)
-		return nil, nil, err
-	}
-
-	log.Info("made it past dial")
-
-	// create stream
-	// client := pb.NewGreeterClient(conn)
-	echoService := pb.NewEchoClient(conn)
-	//stream, err := client2.Echo(context.Background())
-	stream, err := echoService.Echo(ctx)
-	if err != nil {
-		log.Errorf("openn stream error %v", err)
-		return nil, nil, err
-	}
-	return conn, stream, nil
-}
-
-func (e *EchoClient) monitor(ctx context.Context) {
-
-FINISH:
-	for {
-
-		select {
-		case <-ctx.Done():
-			fmt.Println("done triggered in monitor")
-
-			// are we in shutdown ?
-			if atomic.LoadUint32(&e.delete) == 1 {
-				e.closeMonitor <- struct{}{}
-				break FINISH
-			}
-
-			var err error
-			ctx = context.Background()
-			e.conn, e.stream, err = getStream(ctx)
-			for err != nil {
-				// stall and try again
-				time.Sleep(time.Second * 1)
-				log.Errorf("trying getStream: %s", err)
-				e.conn, e.stream, err = getStream(ctx)
-			}
-			fmt.Println("reconnected stream")
-
-			ctx = e.stream.Context()
-			e.startReading()
-
-		case <-e.closeMonitor:
-			fmt.Println("leaving")
-			break FINISH
-		}
-	}
 
 }
 
+// call shutdown EchoClient from outside
 func (e *EchoClient) shutdownAll() error {
 
 	if !atomic.CompareAndSwapUint32(&e.delete, 0, 1) {
 		return errAlreadyInShutdown
 	}
-
-	// force close
-	// stream has no effect
-	// e.stream.CloseSend()
-	e.conn.Close()
+	e.close <- struct{}{}
 	return nil
 
 }
 
 // simple console to test shutdown
 func (e *EchoClient) console() {
+
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("Simple Shell")
 	fmt.Println("---------------------")
@@ -185,19 +155,13 @@ func (e *EchoClient) console() {
 		// convert CRLF to LF
 		text = strings.Replace(text, "\n", "", -1)
 
-		if strings.Compare("hi", text) == 0 {
-			fmt.Println("hello, Yourself")
-		}
 		if strings.Compare("q", text) == 0 {
 			fmt.Println("Shutting down =================")
 
 			err := e.shutdownAll()
 			if err != nil {
-				fmt.Printf("Error shutting down : %s\n", err)
+				log.Errorf("Error shutting down : %s\n", err)
 			}
 		}
-		fmt.Printf("<= %s\n", text)
-
 	}
-
 }

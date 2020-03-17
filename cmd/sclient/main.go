@@ -25,17 +25,17 @@ var (
 )
 
 type EchoClient struct {
-	fname  string
-	lname  string
-	conn   *grpc.ClientConn
-	stream pb.Echo_EchoClient
-	delete uint32
-	close  chan struct{}
+	fname        string
+	lname        string
+	conn         *grpc.ClientConn
+	stream       pb.Echo_EchoClient
+	delete       uint32
+	closeMonitor chan struct{}
 }
 
 func main() {
 	rand.Seed(time.Now().Unix())
-	e := EchoClient{fname: "bob", lname: "smith", close: make(chan struct{})}
+	e := EchoClient{fname: "bob", lname: "smith", closeMonitor: make(chan struct{})}
 
 	ctx := context.Background()
 
@@ -60,16 +60,11 @@ func main() {
 WAITING:
 	for {
 		select {
-		case <-ctx.Done():
-			fmt.Println("context caught")
-			// break WAITING
-			if atomic.LoadUint32(&e.delete) == 1 {
-				break WAITING
-			}
-			time.Sleep(time.Second)
-		case <-e.close:
+		case <-e.closeMonitor:
 			fmt.Println("timeout")
-			time.Sleep(time.Second * 1)
+			// time for stream to close out
+			time.Sleep(time.Millisecond * 100)
+			break WAITING
 		}
 	}
 
@@ -138,7 +133,7 @@ FINISH:
 
 			// are we in shutdown ?
 			if atomic.LoadUint32(&e.delete) == 1 {
-				e.close <- struct{}{}
+				e.closeMonitor <- struct{}{}
 				break FINISH
 			}
 
@@ -156,8 +151,9 @@ FINISH:
 			ctx = e.stream.Context()
 			e.startReading()
 
-		case <-time.After(time.Second):
+		case <-e.closeMonitor:
 			fmt.Println("leaving")
+			break FINISH
 		}
 	}
 
@@ -170,6 +166,7 @@ func (e *EchoClient) shutdownAll() error {
 	}
 
 	// force close
+	// stream has no effect
 	// e.stream.CloseSend()
 	e.conn.Close()
 	return nil

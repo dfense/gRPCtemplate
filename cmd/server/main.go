@@ -96,7 +96,7 @@ func (eserver eserver) Echo(srv pb.Echo_EchoServer) error {
 		log.Printf("send new max=%d", value)
 		// log.Println("calling cencel")
 		// cancel()
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(3 * time.Second)
 
 	}
 	return nil
